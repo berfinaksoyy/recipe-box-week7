@@ -130,3 +130,149 @@ def test_shopping_list_formats_and_duplicates():
     res_multi = client.get(f"/shopping-list?ids={rid}&ids={rid}")
     assert res_multi.status_code == 200
     assert res_multi.json() == ["beans", "tomato"]
+
+
+def test_scale_recipe_integers():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Cake", "ingredients": ["200 g flour", "2 eggs", "100 ml milk"], "tags": ["dessert"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json() == {
+        "id": rid,
+        "title": "Cake",
+        "ingredients": ["400 g flour", "4 eggs", "200 ml milk"],
+        "tags": ["dessert"],
+    }
+
+
+def test_scale_recipe_decimals():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Pudding", "ingredients": ["1.5 cups milk", "0.5 tsp vanilla"]},
+    )
+    rid = post_res.json()["id"]
+
+    # Scaling factor 2 produces whole numbers without .0
+    res_factor2 = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res_factor2.status_code == 200
+    assert res_factor2.json()["ingredients"] == ["3 cups milk", "1 tsp vanilla"]
+
+    # Scaling factor 3 produces decimals
+    res_factor3 = client.get(f"/recipes/{rid}/scaled?factor=3")
+    assert res_factor3.status_code == 200
+    assert res_factor3.json()["ingredients"] == ["4.5 cups milk", "1.5 tsp vanilla"]
+
+
+def test_scale_recipe_simple_fractions():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Bread", "ingredients": ["1/2 tsp salt", "3/4 cup sugar"]},
+    )
+    rid = post_res.json()["id"]
+
+    res_factor2 = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res_factor2.status_code == 200
+    assert res_factor2.json()["ingredients"] == ["1 tsp salt", "1.5 cup sugar"]
+
+    res_factor3 = client.get(f"/recipes/{rid}/scaled?factor=3")
+    assert res_factor3.status_code == 200
+    assert res_factor3.json()["ingredients"] == ["1.5 tsp salt", "2.25 cup sugar"]
+
+
+def test_scale_recipe_without_leading_numbers():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Salad", "ingredients": ["salt to taste", "freshly ground black pepper", "olive oil"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["salt to taste", "freshly ground black pepper", "olive oil"]
+
+
+def test_scale_recipe_readable_results_no_float_noise_and_no_dot_zero():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Risotto", "ingredients": ["0.1 g saffron", "1.5 cups water"]},
+    )
+    rid = post_res.json()["id"]
+
+    # 0.1 * 3 in floating point is 0.30000000000000004; must be cleaned to 0.3
+    res_factor3 = client.get(f"/recipes/{rid}/scaled?factor=3")
+    assert res_factor3.status_code == 200
+    assert res_factor3.json()["ingredients"] == ["0.3 g saffron", "4.5 cups water"]
+
+    # Whole number scaling must not produce .0 (e.g. 3, not 3.0)
+    res_factor2 = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res_factor2.status_code == 200
+    assert res_factor2.json()["ingredients"] == ["0.2 g saffron", "3 cups water"]
+
+
+def test_scale_recipe_invalid_factor_zero_and_negative():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Soup", "ingredients": ["100 g onion"]},
+    )
+    rid = post_res.json()["id"]
+
+    res_zero = client.get(f"/recipes/{rid}/scaled?factor=0")
+    assert res_zero.status_code == 400
+    assert res_zero.json()["detail"] == "factor must be a positive number"
+
+    res_neg = client.get(f"/recipes/{rid}/scaled?factor=-2")
+    assert res_neg.status_code == 400
+    assert res_neg.json()["detail"] == "factor must be a positive number"
+
+
+def test_scale_recipe_invalid_factor_non_numeric():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Soup", "ingredients": ["100 g onion"]},
+    )
+    rid = post_res.json()["id"]
+
+    res_non_num = client.get(f"/recipes/{rid}/scaled?factor=two")
+    assert res_non_num.status_code == 422
+
+    res_missing = client.get(f"/recipes/{rid}/scaled")
+    assert res_missing.status_code == 422
+
+
+def test_scale_recipe_unknown_recipe_404():
+    res = client.get("/recipes/99999/scaled?factor=2")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "unknown recipe"
+
+
+def test_scale_recipe_stored_recipe_not_modified():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Cookies", "ingredients": ["200 g flour", "100 g sugar", "pinch of salt"]},
+    )
+    rid = post_res.json()["id"]
+
+    # Call scaled endpoint
+    scaled_res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert scaled_res.status_code == 200
+    assert scaled_res.json()["ingredients"] == ["400 g flour", "200 g sugar", "pinch of salt"]
+
+    # Verify original recipe in DB is unmodified
+    orig_res = client.get(f"/recipes/{rid}")
+    assert orig_res.status_code == 200
+    assert orig_res.json()["ingredients"] == ["200 g flour", "100 g sugar", "pinch of salt"]
+
+
+def test_scale_ingredient_mixed_fraction_and_units():
+    from main import scale_ingredient
+
+    assert scale_ingredient("1 1/2 cups flour", 2) == "3 cups flour"
+    assert scale_ingredient("2 1/4 cups flour", 2) == "4.5 cups flour"
+    assert scale_ingredient("100g sugar", 2) == "200g sugar"
+    assert scale_ingredient("  50 ml water", 2) == "  100 ml water"
+    assert scale_ingredient("", 2) == ""
+

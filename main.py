@@ -11,9 +11,11 @@ Test:
     pytest
 """
 import json
-import sqlite3
+import math
 from contextlib import closing
 from pathlib import Path
+import re
+import sqlite3
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -62,6 +64,48 @@ def _row_to_recipe(row: sqlite3.Row) -> dict:
     }
 
 
+def _format_quantity(val: float) -> str:
+    """Format a numeric quantity without float noise and without trailing '.0' for integers."""
+    val = round(val, 8)
+    if val == int(val):
+        return str(int(val))
+    return f"{val:f}".rstrip("0").rstrip(".")
+
+
+def scale_ingredient(ingredient: str, factor: float) -> str:
+    """Scale the leading quantity in an ingredient string by a numeric factor.
+
+    Supports integers (e.g. '200 g flour'), decimals (e.g. '1.5 cups milk'),
+    and simple or mixed fractions (e.g. '1/2 tsp salt', '1 1/2 cups flour').
+    Ingredients without a leading number are returned unchanged.
+    """
+    mixed_match = re.match(r"^(\s*)(\d+)\s+(\d+)\s*/\s*(\d+)(.*)$", ingredient)
+    if mixed_match:
+        leading_ws, whole, num, denom, rest = mixed_match.groups()
+        d = int(denom)
+        if d == 0:
+            return ingredient
+        val = (int(whole) + int(num) / d) * factor
+        return f"{leading_ws}{_format_quantity(val)}{rest}"
+
+    frac_match = re.match(r"^(\s*)(\d+)\s*/\s*(\d+)(.*)$", ingredient)
+    if frac_match:
+        leading_ws, num, denom, rest = frac_match.groups()
+        d = int(denom)
+        if d == 0:
+            return ingredient
+        val = (int(num) / d) * factor
+        return f"{leading_ws}{_format_quantity(val)}{rest}"
+
+    dec_match = re.match(r"^(\s*)(\d+(?:\.\d+)?|\.\d+)(.*)$", ingredient)
+    if dec_match:
+        leading_ws, num_str, rest = dec_match.groups()
+        val = float(num_str) * factor
+        return f"{leading_ws}{_format_quantity(val)}{rest}"
+
+    return ingredient
+
+
 @app.get("/")
 def index():
     return FileResponse(BASE / "static" / "index.html")
@@ -96,6 +140,20 @@ def get_recipe(recipe_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="unknown recipe")
     return _row_to_recipe(row)
+
+
+@app.get("/recipes/{recipe_id}/scaled")
+def get_scaled_recipe(recipe_id: int, factor: float):
+    """Return a recipe with ingredient quantities scaled by the given factor."""
+    if math.isnan(factor) or math.isinf(factor) or factor <= 0:
+        raise HTTPException(status_code=400, detail="factor must be a positive number")
+    with closing(get_db()) as conn:
+        row = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown recipe")
+    recipe = _row_to_recipe(row)
+    recipe["ingredients"] = [scale_ingredient(item, factor) for item in recipe["ingredients"]]
+    return recipe
 
 
 @app.get("/shopping-list")
