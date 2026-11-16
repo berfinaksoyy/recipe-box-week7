@@ -395,10 +395,117 @@ def test_scale_recipe_stored_recipe_not_modified():
 
 def test_scale_ingredient_mixed_fraction_and_units():
     assert scale_ingredient("1 1/2 cups flour", 2) == "3 cups flour"
+    assert scale_ingredient("1-1/2 cups flour", 2) == "3 cups flour"
     assert scale_ingredient("2 1/4 cups flour", 2) == "4.5 cups flour"
     assert scale_ingredient("100g sugar", 2) == "200g sugar"
     assert scale_ingredient("  50 ml water", 2) == "  100 ml water"
     assert scale_ingredient("", 2) == ""
     assert scale_ingredient("70% dark chocolate", 2) == "70% dark chocolate"
     assert scale_ingredient("1-2 tsp salt", 2) == "2-4 tsp salt"
+    assert scale_ingredient("1–2 tsp salt", 2) == "2–4 tsp salt"
+    assert scale_ingredient("½ tsp salt", 2) == "1 tsp salt"
+    assert scale_ingredient("1½ cups flour", 2) == "3 cups flour"
+    assert scale_ingredient("1⁄2 tsp salt", 2) == "1 tsp salt"
+    assert scale_ingredient("1st batch of dough", 2) == "1st batch of dough"
+
+
+def test_scale_recipe_large_factor_overflow():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Giant Cake", "ingredients": ["200 g flour"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=1e308")
+    assert res.status_code == 400
+    assert res.json()["detail"] == "factor causes numeric overflow"
+
+
+def test_scale_recipe_small_factor_no_zero_collapse():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Tiny Soup", "ingredients": ["1 cup flour", "2 eggs"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=1e-9")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["1e-09 cup flour", "2e-09 eggs"]
+
+
+def test_scale_recipe_unicode_dashes():
+    post_res = client.post(
+        "/recipes",
+        json={
+            "title": "Seasoned Stew",
+            "ingredients": ["1–2 tsp salt", "10—20 g sugar", "3−5 cloves garlic"],
+        },
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["2–4 tsp salt", "20—40 g sugar", "6−10 cloves garlic"]
+
+
+def test_scale_recipe_unicode_vulgar_fractions_and_fraction_slash():
+    post_res = client.post(
+        "/recipes",
+        json={
+            "title": "Baking",
+            "ingredients": [
+                "½ tsp salt",
+                "1½ cups flour",
+                "1⁄2 tsp baking powder",
+                "¾ cup sugar",
+            ],
+        },
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == [
+        "1 tsp salt",
+        "3 cups flour",
+        "1 tsp baking powder",
+        "1.5 cup sugar",
+    ]
+
+
+def test_scale_recipe_hyphenated_mixed_fractions():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Bread", "ingredients": ["1-1/2 cups flour", "2-3/4 tsp cinnamon"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["3 cups flour", "5.5 tsp cinnamon"]
+
+
+def test_scale_recipe_ordinals_unchanged():
+    post_res = client.post(
+        "/recipes",
+        json={
+            "title": "Pizza",
+            "ingredients": [
+                "1st batch of dough",
+                "2nd layer of cheese",
+                "3rd topping",
+                "4th step",
+            ],
+        },
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == [
+        "1st batch of dough",
+        "2nd layer of cheese",
+        "3rd topping",
+        "4th step",
+    ]
 
