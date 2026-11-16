@@ -28,3 +28,75 @@ def test_list_recipes():
 def test_unknown_recipe_404():
     r = client.get("/recipes/99999")
     assert r.status_code == 404
+
+
+def test_shopping_list_merges_and_deduplicates():
+    r1 = client.post(
+        "/recipes",
+        json={"title": "Pancakes", "ingredients": ["flour", "milk", "eggs"], "tags": ["breakfast"]},
+    )
+    r2 = client.post(
+        "/recipes",
+        json={"title": "Waffles", "ingredients": ["flour", "sugar", "butter", "eggs"], "tags": ["breakfast"]},
+    )
+    r3 = client.post(
+        "/recipes",
+        json={"title": "Omelette", "ingredients": ["eggs", "cheese", "salt"], "tags": ["breakfast"]},
+    )
+    id1 = r1.json()["id"]
+    id2 = r2.json()["id"]
+    id3 = r3.json()["id"]
+
+    res = client.get(f"/shopping-list?ids={id1},{id2},{id3}")
+    assert res.status_code == 200
+    assert res.json() == ["flour", "milk", "eggs", "sugar", "butter", "cheese", "salt"]
+
+
+def test_shopping_list_empty_or_no_ids():
+    r_empty = client.get("/shopping-list")
+    assert r_empty.status_code == 200
+    assert r_empty.json() == []
+
+    r_empty_param = client.get("/shopping-list?ids=")
+    assert r_empty_param.status_code == 200
+    assert r_empty_param.json() == []
+
+
+def test_shopping_list_nonexistent_ids():
+    r1 = client.post(
+        "/recipes",
+        json={"title": "Tea", "ingredients": ["water", "tea leaves"], "tags": ["drink"]},
+    )
+    id1 = r1.json()["id"]
+
+    res = client.get(f"/shopping-list?ids={id1},99999")
+    assert res.status_code == 200
+    assert res.json() == ["water", "tea leaves"]
+
+    res_none = client.get("/shopping-list?ids=99998,99999")
+    assert res_none.status_code == 200
+    assert res_none.json() == []
+
+
+def test_shopping_list_formats_and_duplicates():
+    r = client.post(
+        "/recipes",
+        json={"title": "Chili", "ingredients": ["beans", "beans", "tomato"], "tags": ["dinner"]},
+    )
+    rid = r.json()["id"]
+
+    # Deduplicates within the same recipe
+    res = client.get(f"/shopping-list?ids={rid}")
+    assert res.status_code == 200
+    assert res.json() == ["beans", "tomato"]
+
+    # Comma with space
+    res_space = client.get(f"/shopping-list?ids={rid}, {rid}")
+    assert res_space.status_code == 200
+    assert res_space.json() == ["beans", "tomato"]
+
+    # Multiple query params (?ids=...&ids=...)
+    res_multi = client.get(f"/shopping-list?ids={rid}&ids={rid}")
+    assert res_multi.status_code == 200
+    assert res_multi.json() == ["beans", "tomato"]
+

@@ -15,7 +15,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -93,3 +93,41 @@ def get_recipe(recipe_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="unknown recipe")
     return _row_to_recipe(row)
+
+
+@app.get("/shopping-list")
+def get_shopping_list(request: Request = None, ids: str = "") -> list[str]:
+    raw_list = request.query_params.getlist("ids") if request is not None else []
+    if not raw_list and ids:
+        raw_list = [ids]
+
+    recipe_ids: list[int] = []
+    for item in raw_list:
+        for part in item.split(","):
+            part = part.strip()
+            if part.isdigit():
+                recipe_ids.append(int(part))
+
+    if not recipe_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in recipe_ids)
+    with closing(get_db()) as conn:
+        rows = conn.execute(
+            f"SELECT id, ingredients FROM recipes WHERE id IN ({placeholders})",
+            recipe_ids,
+        ).fetchall()
+
+    recipe_map = {row["id"]: json.loads(row["ingredients"]) for row in rows}
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for rid in recipe_ids:
+        if rid in recipe_map:
+            for ingredient in recipe_map[rid]:
+                if ingredient not in seen:
+                    seen.add(ingredient)
+                    merged.append(ingredient)
+
+    return merged
+
