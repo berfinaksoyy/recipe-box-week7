@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from main import app
+from main import app, scale_ingredient
 
 client = TestClient(app)
 
@@ -238,9 +238,135 @@ def test_scale_recipe_invalid_factor_non_numeric():
 
     res_non_num = client.get(f"/recipes/{rid}/scaled?factor=two")
     assert res_non_num.status_code == 422
+    assert res_non_num.json() == {
+        "detail": [
+            {
+                "type": "float_parsing",
+                "loc": ["query", "factor"],
+                "msg": "Input should be a valid number, unable to parse string as a number",
+                "input": "two",
+            }
+        ]
+    }
 
     res_missing = client.get(f"/recipes/{rid}/scaled")
     assert res_missing.status_code == 422
+    assert res_missing.json() == {
+        "detail": [
+            {
+                "type": "missing",
+                "loc": ["query", "factor"],
+                "msg": "Field required",
+                "input": None,
+            }
+        ]
+    }
+
+
+def test_scale_recipe_down_factor():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Pancakes", "ingredients": ["200 g flour", "2 eggs", "1 cup milk"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=0.5")
+    assert res.status_code == 200
+    assert res.json() == {
+        "id": rid,
+        "title": "Pancakes",
+        "ingredients": ["100 g flour", "1 eggs", "0.5 cup milk"],
+        "tags": [],
+    }
+
+
+def test_scale_recipe_invalid_factor_nan_and_inf():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Soup", "ingredients": ["100 g onion"]},
+    )
+    rid = post_res.json()["id"]
+
+    for val in ["nan", "inf", "-inf"]:
+        res = client.get(f"/recipes/{rid}/scaled?factor={val}")
+        assert res.status_code == 400
+        assert res.json() == {"detail": "factor must be a positive number"}
+
+
+def test_scale_recipe_mixed_fractions_endpoint():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Waffles", "ingredients": ["1 1/2 cups flour", "2 1/4 cups milk"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["3 cups flour", "4.5 cups milk"]
+
+
+def test_scale_recipe_percentages_unchanged():
+    post_res = client.post(
+        "/recipes",
+        json={
+            "title": "Fondue",
+            "ingredients": [
+                "70% dark chocolate",
+                "2% milk",
+                "2 cups 2% milk",
+                "100 g 70% dark chocolate",
+            ],
+        },
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == [
+        "70% dark chocolate",
+        "2% milk",
+        "4 cups 2% milk",
+        "200 g 70% dark chocolate",
+    ]
+
+
+def test_scale_recipe_ranges_scale_both_bounds():
+    post_res = client.post(
+        "/recipes",
+        json={
+            "title": "Curry",
+            "ingredients": [
+                "1-2 tsp salt",
+                "1/2-1 tsp chili flakes",
+                "2 - 4 cloves garlic",
+                "1 to 2 bay leaves",
+                "70-80% dark chocolate",
+            ],
+        },
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == [
+        "2-4 tsp salt",
+        "1-2 tsp chili flakes",
+        "4 - 8 cloves garlic",
+        "2 to 4 bay leaves",
+        "70-80% dark chocolate",
+    ]
+
+
+def test_scale_recipe_leading_decimal_and_zero_denominator():
+    post_res = client.post(
+        "/recipes",
+        json={"title": "Seasoning", "ingredients": [".5 tsp salt", "1/0 tsp cinnamon"]},
+    )
+    rid = post_res.json()["id"]
+
+    res = client.get(f"/recipes/{rid}/scaled?factor=2")
+    assert res.status_code == 200
+    assert res.json()["ingredients"] == ["1 tsp salt", "1/0 tsp cinnamon"]
 
 
 def test_scale_recipe_unknown_recipe_404():
@@ -268,11 +394,11 @@ def test_scale_recipe_stored_recipe_not_modified():
 
 
 def test_scale_ingredient_mixed_fraction_and_units():
-    from main import scale_ingredient
-
     assert scale_ingredient("1 1/2 cups flour", 2) == "3 cups flour"
     assert scale_ingredient("2 1/4 cups flour", 2) == "4.5 cups flour"
     assert scale_ingredient("100g sugar", 2) == "200g sugar"
     assert scale_ingredient("  50 ml water", 2) == "  100 ml water"
     assert scale_ingredient("", 2) == ""
+    assert scale_ingredient("70% dark chocolate", 2) == "70% dark chocolate"
+    assert scale_ingredient("1-2 tsp salt", 2) == "2-4 tsp salt"
 

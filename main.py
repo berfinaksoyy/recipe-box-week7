@@ -69,39 +69,66 @@ def _format_quantity(val: float) -> str:
     val = round(val, 8)
     if val == int(val):
         return str(int(val))
-    return f"{val:f}".rstrip("0").rstrip(".")
+    return f"{val:.8f}".rstrip("0").rstrip(".")
+
+
+_QTY_PATTERN = r"(?:\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:\.\d+)?|\.\d+)"
+
+
+def _parse_quantity(q_str: str) -> float | None:
+    """Parse a quantity string (mixed fraction, simple fraction, or decimal/int) into a float."""
+    q_str = q_str.strip()
+    mixed = re.match(r"^(\d+)\s+(\d+)\s*/\s*(\d+)$", q_str)
+    if mixed:
+        whole, num, denom = int(mixed.group(1)), int(mixed.group(2)), int(mixed.group(3))
+        return (whole + num / denom) if denom != 0 else None
+    frac = re.match(r"^(\d+)\s*/\s*(\d+)$", q_str)
+    if frac:
+        num, denom = int(frac.group(1)), int(frac.group(2))
+        return (num / denom) if denom != 0 else None
+    dec = re.match(r"^(\d+(?:\.\d+)?|\.\d+)$", q_str)
+    if dec:
+        return float(dec.group(1))
+    return None
 
 
 def scale_ingredient(ingredient: str, factor: float) -> str:
     """Scale the leading quantity in an ingredient string by a numeric factor.
 
     Supports integers (e.g. '200 g flour'), decimals (e.g. '1.5 cups milk'),
-    and simple or mixed fractions (e.g. '1/2 tsp salt', '1 1/2 cups flour').
-    Ingredients without a leading number are returned unchanged.
+    simple fractions (e.g. '1/2 tsp salt'), mixed fractions (e.g. '1 1/2 cups flour'),
+    and quantity ranges (e.g. '1-2 tsp salt').
+    Percentages (e.g. '70% dark chocolate') and ingredients without leading
+    numbers (e.g. 'salt to taste') remain unchanged.
     """
-    mixed_match = re.match(r"^(\s*)(\d+)\s+(\d+)\s*/\s*(\d+)(.*)$", ingredient)
-    if mixed_match:
-        leading_ws, whole, num, denom, rest = mixed_match.groups()
-        d = int(denom)
-        if d == 0:
-            return ingredient
-        val = (int(whole) + int(num) / d) * factor
-        return f"{leading_ws}{_format_quantity(val)}{rest}"
+    # Check for percentage at start: e.g. '70% dark chocolate', '2% milk'
+    if re.match(r"^\s*" + _QTY_PATTERN + r"\s*%", ingredient):
+        return ingredient
 
-    frac_match = re.match(r"^(\s*)(\d+)\s*/\s*(\d+)(.*)$", ingredient)
-    if frac_match:
-        leading_ws, num, denom, rest = frac_match.groups()
-        d = int(denom)
-        if d == 0:
+    # Check for range: e.g. '1-2 tsp salt', '1/2-1 tsp salt', '1 to 2 pinches'
+    range_match = re.match(
+        r"^(\s*)(" + _QTY_PATTERN + r")(\s*-\s*|\s+to\s+)(" + _QTY_PATTERN + r")(.*)$",
+        ingredient,
+    )
+    if range_match:
+        leading_ws, q1_str, sep, q2_str, rest = range_match.groups()
+        if rest.lstrip().startswith("%"):
             return ingredient
-        val = (int(num) / d) * factor
-        return f"{leading_ws}{_format_quantity(val)}{rest}"
+        val1 = _parse_quantity(q1_str)
+        val2 = _parse_quantity(q2_str)
+        if val1 is not None and val2 is not None:
+            scaled1 = _format_quantity(val1 * factor)
+            scaled2 = _format_quantity(val2 * factor)
+            return f"{leading_ws}{scaled1}{sep}{scaled2}{rest}"
 
-    dec_match = re.match(r"^(\s*)(\d+(?:\.\d+)?|\.\d+)(.*)$", ingredient)
-    if dec_match:
-        leading_ws, num_str, rest = dec_match.groups()
-        val = float(num_str) * factor
-        return f"{leading_ws}{_format_quantity(val)}{rest}"
+    # Single quantity: mixed fraction, simple fraction, or decimal/int
+    single_match = re.match(r"^(\s*)(" + _QTY_PATTERN + r")(.*)$", ingredient)
+    if single_match:
+        leading_ws, q_str, rest = single_match.groups()
+        val = _parse_quantity(q_str)
+        if val is not None:
+            scaled = _format_quantity(val * factor)
+            return f"{leading_ws}{scaled}{rest}"
 
     return ingredient
 
